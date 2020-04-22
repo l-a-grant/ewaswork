@@ -1,0 +1,121 @@
+# load datasets and packages
+
+library(limma)
+library(bigmelon)
+library(qqman)
+
+#read in gds
+betagds<-openfn.gds("beta.gds")
+
+#extract betas
+betas <- read.gdsn(index.gdsn(betagds,"betas"))
+
+# Read in cginfo , take rownames from c1
+cginfo <- read.csv('cginfo.csv',header=T,row.names=1)
+
+# Read in survey data, take rownames from c1
+pheno <- read.csv('pheno.csv', header=T,row.names=1)
+
+#match rownames of betas with rownames from cginfo
+rownames(betas)<-rownames(cginfo)
+
+#match colnames of betas with colnames from pheno$id
+colnames(betas)<-pheno$id
+
+# Performing principal components analysis
+pcs <- prcomp(betas)
+plot(pcs)
+
+
+# Plotting loading values
+# Play around with the numbers to figure out which PC corresponds to sex
+plot(pcs$rot[,c(1,2)], col=pheno$sex)
+
+#designmatrix
+des <- model.matrix(~status+sex+age+blood+rack+CD8T+CD4T+NK+Bcell+Mono+Gran, data=pheno)
+
+#convert methylation beta-value to m-value through a logistic transformation
+mvalz <- beta2m(betas)
+
+#fit linear model for each gene given a series of arraysq
+fit <- lmFit(mvalz, des)
+
+#Given a microarray linear model fit, compute moderated, t-statistics
+#moderated F-statistic, and log-odds of differential expression by empirical Bayes
+#moderation of the standard errors towards a common value.
+fit <- eBayes(fit)
+
+#extract a table of the top-ranked genes from a linear model fit.
+#list of DMPs in current vs never smokers
+curnevDMP <- topTable(fit, coef = 3, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "BH")
+curnevDMPbonf <- topTable(fit, coef = 3, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "bonferroni")
+
+#extract a table of the top-ranked genes from a linear model fit.
+# list of DMPs in former vs never smokers
+fornevDMP <- topTable(fit, coef = 2, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "BH")
+fornevDMPbonf <- topTable(fit, coef = 2, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "bonferroni")
+
+# list of DMPs associated with age
+ageDMP <- topTable(fit, coef = 5, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "BH")
+head(ageDMP)
+ageDMPbonf <- topTable(fit, coef = 5, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "bonferroni")
+head(ageDMPbonf)
+
+# list of DMPs associated with sex
+sexDMP <- topTable(fit, coef = 4, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "BH")
+head(sexDMP)
+sexDMPbonf <- topTable(fit, coef = 4, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "bonferroni")
+head(sexDMPbonf)
+
+# EWAS with highest qualification (including vocational)
+# encode a vector as a factor
+pheno$hiqual <- factor(pheno$hiqual, levels=c('Degree level or higher', 'A level etc', 'GCSE etc', 'None', 'Other'))
+
+# reference group would be "Degree level or higher"
+qualdes <- model.matrix(~hiqual+sex+age+blood+rack+CD8T+CD4T+NK+Bcell+Mono+Gran, data=pheno)
+head(qualdes)
+qualffit <- lmFit(mvalz, qualdes)
+qualffit <- eBayes(qualffit)
+qualNoneDMP <- topTable(qualffit, coef = 4, number = Inf, p.value = 0.05, genelist = cginfo, adjust = "BH")
+
+# mean effect size between current vs never smokers for all 100 probes
+nevbeta <- betas[rownames(curnevDMP),rownames(subset(pheno,status=='never'))]
+nevbeta <- rowMeans(nevbeta)
+curbeta <- betas[rownames(curnevDMP),rownames(subset(pheno,status=='current'))]
+curbeta <- rowMeans(curbeta)
+curnevDMP$eff <- curbeta - nevbeta
+
+# volcano plot (effect size against adjusted P values)
+#compute logarithm
+curnevDMP$logp <- -log10(curnevDMP$adj.P.Val)
+
+#creates a vector of "n" contiguous colours
+col <- rainbow(16)
+
+#Evaluate an R expression in an environment constructed from data,possibly
+#modifying (a copy of) the original data
+with(curnevDMP, plot(eff,logp,col=col[chr]))
+
+# add legend
+legend('topright', levels(curnevDMP$chr),col=col,pch=1,ncol=3,cex=0.8,title='chr')
+
+# add labels
+text(curnevDMP[1:20,11],curnevDMP[1:20,12],labels=curnevDMP[1:20,3],offset=0.1,cex=0.7)
+abline(h=-log(0.05),col='blue')
+
+
+#alex code to make qq & manhattan plot (read more about)
+# make qq plot
+qq(curnevDMP$adj.P.Val)
+
+# make manhattan plot
+city <- data.frame('CHR' = as.character(cginfo$chr),
+                   'BP' = as.numeric(cginfo$pos),
+                   'P' = as.numeric(curnevDMP$adj.P.Val), stringsAsFactors = F
+                   )
+
+# Replace names of X and Y to 23 and 24
+city$CHR[city$CHR=='X'] <- 23
+city$CHR[city$CHR=='Y'] <- 24
+city$CHR <- as.numeric(city$CHR)
+manhattan(city)
